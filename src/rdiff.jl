@@ -1,8 +1,6 @@
 
 include("utils.jl")
 
-const BUILT_IN_FNS = [:(+), :(-), :(*), :(/), :exp, :log]
-
 @runonce type ExH{H}
     head::Symbol
     args::Vector
@@ -38,9 +36,19 @@ function ExGraph()
 end
 
 function Base.show(io::IO, g::ExGraph)
-    print(io, "ExGraph($(length(g.tape)))")
+    print(io, "ExGraph\n")
+    for node in g.tape
+        print(io, "  $node\n")
+    end    
 end
 
+function genname(g::ExGraph)
+    g.last_id += 1
+    return symbol("w$(g.last_id)")
+end
+
+
+## addnode!
 
 function addnode!(g::ExGraph, name::Symbol, op::Symbol,
                   deps::Vector{Symbol}, val::Any)
@@ -56,45 +64,54 @@ function addnode!(g::ExGraph, op::Symbol;
     return addnode!(g, name, op, deps, val)
 end
 
-## function addnode!(g::ExGraph, op::Symbol, deps::Vector{Symbol})
-##     name = genname(g)
-##     addnode!(g, name, op, deps, nothing)
-##     return name
-## end
 
-function genname(g::ExGraph)
-    g.last_id += 1
-    return symbol("w$(g.last_id)")
-end
+## parse!
 
+"""
+Parse Julia expression and build ExGraph in-place.
+Return the name of the output variable.
+"""
 parse!(g::ExGraph, ex::Expr) = parse!(g, toExH(ex))
-parse!(g::ExGraph, s::Symbol) = [s]
+parse!(g::ExGraph, ::LineNumberNode) = :nil
+parse!(g::ExGraph, s::Symbol) = s
 
 function parse!(g::ExGraph, x::Number)
     name = addnode!(g, :constant; val=x)
-    return [name]
+    return name
 end
 
 
 function parse!(g::ExGraph, ex::ExH{:(=)})
     op = :(=)
     rhs, lhs = ex.args
-    # TODO
+    name = rhs
+    deps = [parse!(g, lhs)]
+    addnode!(g, op; name=name, deps=deps)
+    return name    
 end
 
-# TODO: change deps to Set{Symbol}
 function parse!(g::ExGraph, ex::ExH{:call})
     op = ex.args[1]
-    deps = flatten(Symbol, [parse!(g, arg) for arg in ex.args[2:end]])
+    # deps = flatten(Symbol, [parse!(g, arg) for arg in ex.args[2:end]])
+    deps = Symbol[parse!(g, arg) for arg in ex.args[2:end]]
     name = addnode!(g, op; deps=deps)
-    deps2 = union(deps, Set([name]))
-    return deps2
+    return name
+end
+
+function parse!(g::ExGraph, ex::ExH{:block})
+    names = Symbol[parse!(g, subex) for subex in ex.args]
+    return names[end]
 end
 
 
-
+################# main ###################
 
 function main()
-    ex = :(x + 2y)
+    ex = quote
+        n = x1*x2
+        z = n + sin(x1)
+    end
     g = ExGraph([:x, :y])
+    parse!(g, ex)
 end
+

@@ -9,7 +9,7 @@ end
 
 toExH(ex::Expr) = ExH{ex.head}(ex.head, ex.args, ex.typ)
 
-@runonce type ExNode
+@runonce type ExNode{Op}
     name::Symbol                # name of a variable
     op::Symbol                  # operation that produced it or special symbol
     deps::Vector{Symbol}        # dependencies of this variable (e.g. args of op)
@@ -17,16 +17,17 @@ toExH(ex::Expr) = ExH{ex.head}(ex.head, ex.args, ex.typ)
 end
 
 @runonce type ExGraph
-    tape::Vector{ExNode}        # list of ExNode's
-    vars::Dict{Symbol, ExNode}  # map from var name to its node in the graph
-    input::Vector{Symbol}       # list of input variables
-    last_id::Int                # helper, index of last generated var name
+    tape::Vector{ExNode}              # list of ExNode's
+    vars::Dict{Symbol, ExNode}        # map from var name to its node in the graph
+    input::Vector{Tuple{Symbol,Any}}  # list of input variables
+    last_id::Int                      # helper, index of last generated var name
 end
 
-function ExGraph(input::Vector{Symbol})
+function ExGraph(;input...)
+    println(input)
     g = ExGraph(ExNode[], Dict(), input, 0)
-    for name in input
-        addnode!(g, :input; name=name)
+    for (name, val) in input
+        addnode!(g, :input; name=name, val=val)
     end
     return g
 end
@@ -39,7 +40,7 @@ function Base.show(io::IO, g::ExGraph)
     print(io, "ExGraph\n")
     for node in g.tape
         print(io, "  $node\n")
-    end    
+    end
 end
 
 function genname(g::ExGraph)
@@ -52,7 +53,7 @@ end
 
 function addnode!(g::ExGraph, name::Symbol, op::Symbol,
                   deps::Vector{Symbol}, val::Any)
-    node = ExNode(name, op, deps, val)
+    node = ExNode{op}(name, op, deps, val)
     push!(g.tape, node)
     g.vars[name] = node
     return name
@@ -87,7 +88,7 @@ function parse!(g::ExGraph, ex::ExH{:(=)})
     name = rhs
     deps = [parse!(g, lhs)]
     addnode!(g, op; name=name, deps=deps)
-    return name    
+    return name
 end
 
 function parse!(g::ExGraph, ex::ExH{:call})
@@ -104,14 +105,47 @@ function parse!(g::ExGraph, ex::ExH{:block})
 end
 
 
+## evaluate!
+
+evaluate!(g::ExGraph, node::ExNode{:constant}) = node.val
+evaluate!(g::ExGraph, node::ExNode{:input}) = node.val
+
+function evaluate!(g::ExGraph, node::ExNode{:(=)})
+    if (node.val != nothing) return node.val end
+    dep_node = g.vars[node.deps[1]]
+    node.val = evaluate!(g, dep_node)
+    return node.val
+end
+
+# consider all other cases as function calls
+function evaluate!{Op}(g::ExGraph, node::ExNode{Op})
+    if (node.val != nothing) return node.val end 
+    dep_nodes = [g.vars[dep] for dep in node.deps]
+    # why this short version doesn't work? 
+    # dep_vals = [evaluate!(g, dep_node) for dep_node in dep_nodes]
+    for dep_node in dep_nodes
+        evaluate!(g, dep_node)
+    end
+    dep_vals = [dep_node.val for dep_node in dep_nodes]    
+    ex = :(($Op)($(dep_vals...)))
+    node.val = eval(ex)
+    return node.val
+end
+
+evaluate!(g::ExGraph, name::Symbol) = evaluate!(g, g.vars[name])
+
+
+
 ################# main ###################
 
 function main()
     ex = quote
-        n = x1*x2
-        z = n + sin(x1)
+        c = 1
+        z = x1*x2 + sin(x1) + c
     end
-    g = ExGraph([:x, :y])
+    g = ExGraph(;x1=1, x2=2)
     parse!(g, ex)
+    @time evaluate!(g, :w2) # precompile
+    @time val = evaluate!(g, :z)
 end
 

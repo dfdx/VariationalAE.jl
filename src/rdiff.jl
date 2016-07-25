@@ -1,4 +1,6 @@
 
+import Base: *, +
+
 include("utils.jl")
 
 @runonce type ExH{H}
@@ -20,12 +22,13 @@ end
     tape::Vector{ExNode}              # list of ExNode's
     vars::Dict{Symbol, ExNode}        # map from var name to its node in the graph
     input::Vector{Tuple{Symbol,Any}}  # list of input variables
+    adj::Dict{Symbol,Any}             # dictionary of adjoints (derivatives)
     last_id::Int                      # helper, index of last generated var name
 end
 
 function ExGraph(;input...)
     println(input)
-    g = ExGraph(ExNode[], Dict(), input, 0)
+    g = ExGraph(ExNode[], Dict(), input, Dict(), 0)
     for (name, val) in input
         addnode!(g, :input; name=name, val=val)
     end
@@ -33,7 +36,7 @@ function ExGraph(;input...)
 end
 
 function ExGraph()
-    return ExGraph(ExNode[], Dict(), [], 0)
+    return ExGraph(ExNode[], Dict(), [], Dict(), 0)
 end
 
 function Base.show(io::IO, g::ExGraph)
@@ -119,14 +122,14 @@ end
 
 # consider all other cases as function calls
 function evaluate!{Op}(g::ExGraph, node::ExNode{Op})
-    if (node.val != nothing) return node.val end 
+    if (node.val != nothing) return node.val end
     dep_nodes = [g.vars[dep] for dep in node.deps]
-    # why this short version doesn't work? 
+    # why this short version doesn't work?
     # dep_vals = [evaluate!(g, dep_node) for dep_node in dep_nodes]
     for dep_node in dep_nodes
         evaluate!(g, dep_node)
     end
-    dep_vals = [dep_node.val for dep_node in dep_nodes]    
+    dep_vals = [dep_node.val for dep_node in dep_nodes]
     ex = :(($Op)($(dep_vals...)))
     node.val = eval(ex)
     return node.val
@@ -135,17 +138,131 @@ end
 evaluate!(g::ExGraph, name::Symbol) = evaluate!(g, g.vars[name])
 
 
+## symbolic operations
+
+# TODO
++(ex1::Expr, ex2::Expr) = :($ex1 + $ex2)
+*(ex1::Expr, ex2::Expr) = :($ex1 * $ex2)
+# +(ex1::Expr, n::Number) = :($ex1 + $n)
+# *(ex1::Expr, ex2::Expr) = :($ex1 * $ex2)
+Base.promote_rule(::Type{Expr}, ::Type{Number}) = Expr
+Base.convert(::Type{Expr}, x::Number) = :($x + 0)
+
+
+## symbolic substitution
+
+"""
+Substitute symbols in `ex` according to substitute table `st`.
+Example:
+    ex = :(x ^ n)
+    subs(ex, x=2)  # gives :(2 ^ n)
+"""
+function subs(ex::Expr, st::Dict)
+    new_args = [isa(arg, Expr) ? subs(arg, st) : get(st, arg, arg)
+                for arg in ex.args]
+    new_ex = Expr(ex.head, new_args...)
+    return new_ex
+end
+
+subs(ex::Expr; st...) = subs(ex, Dict(st))
+
+
+## derivative rules
+
+const DERIV_RULES = Dict{Tuple{Symbol,Vector{Type}, Int}, Tuple{Expr,Expr}}()
+
+# accpets expressions like `foo(x::Number, y::Matrix)`
+function typesof(ex::Expr)
+    @assert ex.head == :call
+    @assert reduce(&, [isa(exa, Expr) && exa.head == :(::)
+                       for exa in ex.args[2:end]])
+    return [eval(exa.args[2]) for exa in ex.args[2:end]]
+end
+
+macro deriv(ex::Expr, idx::Int, dex::Expr)
+    if ex.head == :call
+        op = ex.args[1]
+        types = typesof(ex)
+        DERIV_RULES[(op, types, idx)] = (ex, dex)
+    else
+        error("Can't define derrivatives on non-call expressions")
+    end
+end
+
+function getrule(ex::Expr, types::Vector{DataType}, idx::Int)
+    return DERIV_RULES[(ex.args[1], types, idx)]
+end
+
+function applyrule(op::Symbol, vars::Vector{Tuple{Symbol,Type}}, idx::Int)
+    rule = DERIV_RULES[(op, vars[idx][2])]
+end
+
+
+## expression pattern matching
+
+isplaceholder(x) = false
+isplaceholder(x::Symbol) = startswith(string(x), "_")
+
+function match!(m::Dict{Symbol,Any}, p, x)
+    if isplaceholder(p)
+        m[p] = x
+        return true
+    elseif isa(p, Expr) && isa(x, Expr)
+        result = (match!(m, p.head, x.head) &&
+                  reduce(&, [match!(m, pa, xa)
+                             for (pa, xa) in zip(p.args, x.args)]))
+    else
+        return p == x
+    end
+end
+
+function Base.match(pattern::Expr, ex::Expr)
+    m = Dict{Symbol,Any}()
+    res = match!(m, pattern, ex)
+    if res
+        return Nullable(m)
+    else
+        return Nullable{Dict{Symbol,Any}}()
+    end
+end
+
+
+## rdiff
+
+"""
+Fill derivatives of all variables below `y`.
+Seed is a current values of dz/dy and is equal 1 for output var and
+some expression for intermediate vars.
+Naming:
+ * z - output variable
+ * y - variable at hand
+ * x - one of y's dependencies
+"""
+function dfill!(g::ExGraph, y::Symbol, seed::Any)
+    dzdy = seed
+    y_node = g.vars[y]
+    for (i, x) in enumerate(y_node.deps)
+        x_node = g.vars[x]
+        dydx = applyrule(y_node.op, y_node.deps, i) # TODO
+        a = dzdy * dydx
+        if in(x, g.adj)
+            g.adj[x] += a
+        else
+            g.adj[x] = a
+        end
+    end
+end
+
+
 
 ################# main ###################
 
 function main()
     ex = quote
-        c = 1
-        z = x1*x2 + sin(x1) + c
+        z = x1*x2 + sin(x1)
     end
     g = ExGraph(;x1=1, x2=2)
     parse!(g, ex)
     @time evaluate!(g, :w2) # precompile
     @time val = evaluate!(g, :z)
 end
-

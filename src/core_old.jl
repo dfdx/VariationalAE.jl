@@ -6,7 +6,7 @@
 # see also https://jmetzen.github.io/2015-11-27/vae.html
 
 using Distributions
-using XGrad
+using XDiff
 using GradDescent
 using MLDatasets
 using MLDataUtils
@@ -14,10 +14,10 @@ using ImageView
 
 
 logistic(x) = 1 ./ (1 + exp.(-x))
-@diffrule logistic(x::Number) x (logistic(x) .* (1 .- logistic(x)) .* ds)
+@scalardiff logistic(x::Number) 1 (logistic(x) .* (1 .- logistic(x)))
 
 softplus(x) = log(exp(x) + 1)
-@diffrule softplus(x::Number) x logistic(x) .* ds
+@scalardiff softplus(x::Number) 1 logistic(x)
 
 
 # variational autoencoder with Gaussian observed and latent variables
@@ -67,10 +67,7 @@ VAE{T}(n_inp, n_he1, n_he2, n_z, n_hd1, n_hd2, n_out) where T =
     )
 
 
-include("modelopt.jl")
 include("cost.jl")
-
-
 
 
 
@@ -92,18 +89,28 @@ function fit(m::VAE{T}, X::AbstractMatrix{Float64};
     x1 = X[:, 1:batch_size]
     eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))  # eps has size (n_inp, n_z)
     println("Compiling gradient...")
-    g = xdiff(vae_cost; m=m, eps=eps, x=x1)
+    g = xdiff(vae_cost; model_named_params(m)..., eps=eps, x=x1)
     # fit to data
-    mem = Dict()    
-    m_opt = ModelOptimizer(typeof(m), opt)
+    opt = Adam(α=1.0)
+    mem = Dict()
+    theta = model_params(m)
+    optimizers = [deepcopy(opt) for i=1:length(theta)]
     for epoch in 1:n_epochs
-        print("Epoch $epoch")
-        for (i, x) in enumerate(eachbatch(X, size=batch_size))            
+        println("Epoch: $epoch")
+        for (i, x) in enumerate(eachbatch(X, size=batch_size))
+            # partial_fit(m, x, g; mem=mem)
+            # eps = typeof(x)(randn(size(m.We3, 1), batch_size))  # eps has size (n_inp, n_z)
             eps = zeros(size(m.We3, 1), batch_size)
-            cost, dm, deps, dx = Base.invokelatest(g, m, eps, x)
-            update_params!(m_opt, m, dm)
-            println("  batch $i, cost = $cost")
-        end        
+            dvals = Base.invokelatest(g, theta..., eps, x)
+            cost = dvals[1]            
+            println("cost = $cost")
+            deltas = dvals[2:end-2]
+            for j=1:length(deltas)
+                # delta = update(optimizers[j], deltas[j])
+                delta = 0.001 * deltas[j]
+                theta[j] .-= delta
+            end
+        end
     end
 end
 
@@ -143,21 +150,6 @@ function showit(x)
 end
 
 
-
-#################################################
-
-function load_espresso()
-    for n in Base.names(Espresso, true) @eval import Espresso: $n end
-end
-
-
-function load_xgrad()
-    for n in Base.names(XGrad, true) @eval import XGrad: $n end
-end
- 
-
-
-
 function run()
     m = VAE{Float64}(784, 500, 500, 20, 500, 500, 784)
     X, _ = MNIST.traindata()
@@ -170,5 +162,6 @@ function run()
     end
 
     m2 = deepcopy(m)
-
+    
 end
+

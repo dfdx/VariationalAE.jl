@@ -1,6 +1,9 @@
 
 include("core.jl")
 
+
+
+
 function _main()
     We1 = randn(500, 784); be1 = randn(500);
     We2 = randn(500, 500); be2 = randn(500);

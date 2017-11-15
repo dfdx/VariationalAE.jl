@@ -3,28 +3,113 @@
 # based on Auto-Encoding Variational Bayes by D. Kingma and M. Welling ([K&W])
 # https://arxiv.org/abs/1312.6114
 # see also http://vdumoulin.github.io/morphing_faces/
+# see also https://jmetzen.github.io/2015-11-27/vae.html
 
-using Base.LinAlg.BLAS
 using Distributions
-import StatsBase.fit
-import StatsBase.coef
-import StatsBase: sample, sample!
+using XGrad
+using GradDescent
+using MLDatasets
+using MLDataUtils
+using ImageView
 
-typealias Mat{T} AbstractArray{T, 2}
-typealias Vec{T} AbstractArray{T, 1}
 
-# variational autoencoder with Gaussian observed and latent variables
-type VAE{T,XD}
-    # encoding
-    # W[1] - 1st layer, W[2] - 2nd layer (mu), W[3] 3rd layer (sigma2)
-    W::NTuple{Matrix{T},3} 
-    b::NTuple{Vector{T},3}
+logistic(x) = 1 ./ (1 + exp.(-x))
+@diffrule logistic(x::Number) x (logistic(x) .* (1 .- logistic(x)) .* ds)
+
+softplus(x) = log(exp(x) + 1)
+@diffrule softplus(x::Number) x logistic(x) .* ds
+
+
+include("model.jl")
+include("modelopt.jl")  # TODO: use one from Milk.jl when it's ready
+
+
+model_params(m) = [getfield(m, f) for f in fieldnames(m)]
+model_named_params(m) = [f => getfield(m, f) for f in fieldnames(m)]
+
+
+# TODO: use implementation form Milk.jl
+function xavier_init(dim_in, dim_out; c=1)
+    low = -c * sqrt(6.0 / (dim_in + dim_out))
+    high = c * sqrt(6.0 / (dim_in + dim_out))
+    return rand(Uniform(low, high), dim_in, dim_out)
 end
 
 
-function encode{T}(vae::VAE{T,Normal}, x::Vector{T})
-    # [K&W] Eq. 12
-    h = tanh(vae.W[1] * x .+ vae.b[1])
-    mu = vae.W[2] * h .+ vae.b[2]
-    sigma2 = vae.W[3] * h .+ vae.b[3]
+function fit(m::VAE{T}, X::AbstractMatrix{Float64};
+             n_epochs=10, batch_size=100, opt=Adam(α=0.001)) where T
+    # compile gradient
+    x1 = X[:, 1:batch_size]
+    eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))  # eps has size (n_inp, n_z)
+    println("Compiling gradient...")
+    g = xdiff(vae_cost; m=m, eps=eps, x=x1)
+    # fit to data
+    mem = Dict()
+    m_opt = ModelOptimizer(typeof(m), opt)
+    for epoch in 1:n_epochs
+        print("Epoch $epoch: ")
+        epoch_cost = 0
+        t = @elapsed for (i, x) in enumerate(eachbatch(X, size=batch_size))
+            eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))
+            cost, dm, deps, dx = Base.invokelatest(g, m, eps, x, mem)
+            update_params!(m_opt, m, dm)
+            epoch_cost += cost
+        end
+        println("avg_cost=$(epoch_cost / (size(X,2) / batch_size)), elapsed=$t")
+    end
+    return m
+end
+
+
+function generate(m::VAE, z::AbstractVector)
+    return decode(m, z)
+end
+
+
+function generate(m::VAE, id::Int)
+    z = zeros(size(m.Wd1, 2))
+    z[id] = 1.0
+    hd1 = tanh.(m.Wd1 * z .+ m.bd1)
+    hd2 = tanh.(m.Wd2 * hd1 .+ m.bd2)
+    return logistic.(m.Wd3 * hd2 .+ m.bd3)
+end
+
+
+function reconstruct(m::VAE, x::AbstractVector)
+    x = reshape(x, length(x), 1)
+    mu, _ = encode(m, x)
+    z = mu
+    x_rec = decode(m, z)
+    return x_rec
+end
+
+
+## experiments
+
+function showit(x)
+    reshape(x, 28, 28) |> imshow
+end
+
+
+function show_both(m, x)
+    x_ = reconstruct(m, x)
+    showit(x)
+    showit(x_)
+end
+
+
+
+function run()
+    m = VAE{Float64}(784, 500, 500, 20, 500, 500, 784)
+    X, _ = MNIST.traindata()
+    X = reshape(X, 784, 60000)
+    @time m = fit(m, X; n_epochs=2)
+
+    reconstruct(m, X[:, 100]) |> showit
+    for i=1:5
+        generate(m, i) |> showit
+    end
+
+    m2 = deepcopy(m)
+
 end

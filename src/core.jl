@@ -6,11 +6,10 @@
 # see also https://jmetzen.github.io/2015-11-27/vae.html
 
 using Distributions
-using XGrad
 using GradDescent
-using MLDatasets
 using MLDataUtils
-using ImageView
+using StatsBase
+using XGrad
 
 
 logistic(x) = 1 ./ (1 + exp.(-x))
@@ -36,8 +35,8 @@ function xavier_init(dim_in, dim_out; c=1)
 end
 
 
-function fit(m::VAE{T}, X::AbstractMatrix{Float64};
-             n_epochs=10, batch_size=100, opt=Adam(α=0.001)) where T
+function StatsBase.fit!(m::VAE{T}, X::AbstractMatrix{Float64};
+              n_epochs=10, batch_size=100, opt=Adam(α=0.001)) where T
     # compile gradient
     x1 = X[:, 1:batch_size]
     eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))  # eps has size (n_inp, n_z)
@@ -83,33 +82,3 @@ function reconstruct(m::VAE, x::AbstractVector)
     return x_rec
 end
 
-
-## experiments
-
-function showit(x)
-    reshape(x, 28, 28) |> imshow
-end
-
-
-function show_both(m, x)
-    x_ = reconstruct(m, x)
-    showit(x)
-    showit(x_)
-end
-
-
-
-function run()
-    m = VAE{Float64}(784, 500, 500, 20, 500, 500, 784)
-    X, _ = MNIST.traindata()
-    X = reshape(X, 784, 60000)
-    @time m = fit(m, X; n_epochs=2)
-
-    reconstruct(m, X[:, 100]) |> showit
-    for i=1:5
-        generate(m, i) |> showit
-    end
-
-    m2 = deepcopy(m)
-
-end

@@ -16,7 +16,6 @@ function show_recon(m, x)
 end
 
 
-
 function run()
     m = VAE{Float64}(784, 500, 500, 20, 500, 500, 784)
     X, _ = MNIST.traindata()
@@ -29,5 +28,5 @@ function run()
     # check learned features
     for i=1:2:10
         generate(m, i) |> show_pic
-    end    
+    end
 end

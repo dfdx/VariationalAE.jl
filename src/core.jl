@@ -20,14 +20,13 @@ softplus(x) = log(exp(x) + 1)
 
 
 include("model.jl")
-include("modelopt.jl")  # TODO: use one from Milk.jl when it's ready
+include("modelopt.jl")
 
 
 model_params(m) = [getfield(m, f) for f in fieldnames(m)]
 model_named_params(m) = [f => getfield(m, f) for f in fieldnames(m)]
 
 
-# TODO: use implementation form Milk.jl
 function xavier_init(dim_in, dim_out; c=1)
     low = -c * sqrt(6.0 / (dim_in + dim_out))
     high = c * sqrt(6.0 / (dim_in + dim_out))
@@ -37,20 +36,14 @@ end
 
 function StatsBase.fit!(m::VAE{T}, X::AbstractMatrix{Float64};
               n_epochs=10, batch_size=100, opt=Adam(α=0.001)) where T
-    # compile gradient
-    x1 = X[:, 1:batch_size]
-    eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))  # eps has size (n_inp, n_z)
-    println("Compiling gradient...")
-    g = xdiff(vae_cost; m=m, eps=eps, x=x1)
-    # fit to data
     mem = Dict()
     m_opt = ModelOptimizer(typeof(m), opt)
     for epoch in 1:n_epochs
         print("Epoch $epoch: ")
         epoch_cost = 0
         t = @elapsed for (i, x) in enumerate(eachbatch(X, size=batch_size))
-            eps = typeof(x1)(rand(Normal(0, 1), size(m.We3, 1), batch_size))
-            cost, dm, deps, dx = Base.invokelatest(g, m, eps, x, mem)
+            eps = typeof(x)(rand(Normal(0, 1), size(m.We3, 1), batch_size))
+            cost, dm, deps, dx = xgrad(vae_cost, mem=mem, m=m, eps=eps, x=x)
             update_params!(m_opt, m, dm)
             epoch_cost += cost
         end

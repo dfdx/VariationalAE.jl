@@ -9,39 +9,41 @@ using Distributions
 using GradDescent
 using MLDataUtils
 using StatsBase
+using Milk
 using XGrad
 
 
-logistic(x) = 1 ./ (1 + exp.(-x))
-@diffrule logistic(x::Number) x (logistic(x) .* (1 .- logistic(x)) .* ds)
+# logistic(x) = 1 ./ (1 + exp.(-x))
+# @diffrule logistic(x::Number) x (logistic(x) .* (1 .- logistic(x)) .* ds)
 
-softplus(x) = log(exp(x) + 1)
-@diffrule softplus(x::Number) x logistic(x) .* ds
 
 
 include("model.jl")
-include("modelopt.jl")
+# include("modelopt.jl")
 
 
 model_params(m) = [getfield(m, f) for f in fieldnames(m)]
 model_named_params(m) = [f => getfield(m, f) for f in fieldnames(m)]
 
 
-function xavier_init(dim_in, dim_out; c=1)
-    low = -c * sqrt(6.0 / (dim_in + dim_out))
-    high = c * sqrt(6.0 / (dim_in + dim_out))
-    return rand(Uniform(low, high), dim_in, dim_out)
-end
+# function xavier_init(dim_in, dim_out; c=1)
+#     low = -c * sqrt(6.0 / (dim_in + dim_out))
+#     high = c * sqrt(6.0 / (dim_in + dim_out))
+#     return rand(Uniform(low, high), dim_in, dim_out)
+# end
 
 
-function StatsBase.fit!(m::VAE{T}, X::AbstractMatrix{Float64};
-              n_epochs=10, batch_size=100, opt=Adam(α=0.001)) where T
+function StatsBase.fit!(m::VAE{T}, X::AbstractMatrix{T};
+              n_epochs=10, batch_size=100, opt=Adam(α=0.001), cuda=false) where T
     mem = Dict()
     m_opt = ModelOptimizer(typeof(m), opt)
     for epoch in 1:n_epochs
         print("Epoch $epoch: ")
         epoch_cost = 0
         t = @elapsed for (i, x) in enumerate(eachbatch(X, size=batch_size))
+            if cuda
+                x = to_cuda(x)
+            end
             eps = typeof(x)(rand(Normal(0, 1), size(m.We3, 1), batch_size))
             cost, dm, deps, dx = xgrad(vae_cost, mem=mem, m=m, eps=eps, x=x)
             update_params!(m_opt, m, dm)
@@ -74,4 +76,3 @@ function reconstruct(m::VAE, x::AbstractVector)
     x_rec = decode(m, z)
     return x_rec
 end
-

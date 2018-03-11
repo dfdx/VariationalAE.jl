@@ -65,6 +65,8 @@ function decode(m::VAE, z)
 end
 
 
+# TODO: make cost with Gaussian decoder
+# TODO: figure out why KLD is different from the one in papers
 function vae_cost(m::VAE, eps, x)
     mu, log_sigma2 = encode(m, x)
     z = mu .+ sqrt.(exp.(log_sigma2)) .* eps
